@@ -2,32 +2,38 @@
 
 from __future__ import annotations
 
-import socket
+import errno
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
 from agents import orchestrator
 
 
-def test_port_is_available_for_unused_ephemeral_port() -> None:
-    """A temporary free port should be reported as available."""
+def test_port_is_available_for_unused_ephemeral_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful bind attempt should be reported as available."""
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
+    fake_socket = Mock()
+    socket_factory = MagicMock()
+    socket_factory.return_value.__enter__.return_value = fake_socket
+    socket_factory.return_value.__exit__.return_value = None
+    monkeypatch.setattr(orchestrator.socket, "socket", socket_factory)
 
-    assert orchestrator._port_is_available(port) is True
+    assert orchestrator._port_is_available(8123) is True
+    fake_socket.bind.assert_called_once_with(("0.0.0.0", 8123))
 
 
-def test_port_is_unavailable_when_already_bound() -> None:
-    """A live listener should cause the preflight port check to fail."""
+def test_port_is_unavailable_when_already_bound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An address-in-use bind failure should be reported as unavailable."""
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        sock.listen(1)
-        port = sock.getsockname()[1]
+    fake_socket = Mock()
+    fake_socket.bind.side_effect = OSError(errno.EADDRINUSE, "Address already in use")
+    socket_factory = MagicMock()
+    socket_factory.return_value.__enter__.return_value = fake_socket
+    socket_factory.return_value.__exit__.return_value = None
+    monkeypatch.setattr(orchestrator.socket, "socket", socket_factory)
 
-        assert orchestrator._port_is_available(port) is False
+    assert orchestrator._port_is_available(8123) is False
 
 
 def test_startup_port_check_raises_clean_error(monkeypatch: pytest.MonkeyPatch) -> None:

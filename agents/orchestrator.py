@@ -117,8 +117,6 @@ ORCHESTRATOR_AGENT_SEED = os.getenv(
     ),
 )
 
-CHAT_PROTOCOL_NAME = "AgentChatProtocol"
-CHAT_PROTOCOL_VERSION = "0.3.0"
 REGISTRATION_METADATA = {
     "description": AGENT_DESCRIPTION,
     "tags": AGENT_TAGS,
@@ -130,18 +128,13 @@ agent = Agent(
     name=AGENT_NAME,
     seed=ORCHESTRATOR_AGENT_SEED,
     port=AGENT_PORT,
-    mailbox=True,          # ← keep this
-    # endpoint=[...]       # ← remove this line entirely
+    mailbox=True,
     readme_path=str(README_PATH),
     description=AGENT_DESCRIPTION,
     publish_agent_details=True,
     metadata=REGISTRATION_METADATA,
 )
-chat_protocol = Protocol(
-    name=CHAT_PROTOCOL_NAME,
-    version=CHAT_PROTOCOL_VERSION,
-    spec=chat_protocol_spec,
-)
+protocol = Protocol(spec=chat_protocol_spec)
 payment_protocol = (
     Protocol(spec=payment_protocol_spec, role="seller")
     if PAYMENT_PROTOCOL_AVAILABLE
@@ -789,7 +782,7 @@ async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) ->
         )
 
 
-@chat_protocol.on_message(ChatMessage)
+@protocol.on_message(ChatMessage)
 async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
     """Primary Chat Protocol entrypoint for ASI:One and compatible agents."""
 
@@ -805,7 +798,7 @@ async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
     await process_triage_message(ctx, sender, msg)
 
 
-@chat_protocol.on_message(ChatAcknowledgement)
+@protocol.on_message(ChatAcknowledgement)
 async def handle_acknowledgement(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
     """Accept chat acknowledgements for protocol completeness."""
 
@@ -855,12 +848,12 @@ async def on_startup(ctx: Context) -> None:
     except Exception:
         ctx.logger.exception("Unable to fund orchestrator wallet automatically.")
     await register_agentverse_listing(ctx)
-    ctx.logger.info("Fetch.ai chat protocol attached: %s", chat_protocol.digest)
+    ctx.logger.info("Fetch.ai chat protocol attached: %s", protocol.digest)
     ctx.logger.info("Medical triage orchestrator ready at %s", agent.address)
 
 
 # Attach the Fetch.ai chat protocol so Agentverse and ASI:One can discover it.
-agent.include(chat_protocol, publish_manifest=True)
+agent.include(protocol, publish_manifest=True)
 if payment_protocol is not None:
     agent.include(payment_protocol, publish_manifest=True)
 

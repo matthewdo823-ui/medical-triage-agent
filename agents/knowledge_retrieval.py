@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+import sys
 from typing import Final
 from urllib.parse import unquote
 
@@ -14,11 +15,15 @@ import httpx
 from dotenv import load_dotenv
 from uagents import Agent, Context
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from models.triage import DifferentialDiagnosis, KnowledgeResult, SymptomInput
 from prompts.retrieval import KNOWLEDGE_RETRIEVAL_SYSTEM
 from utils.llm_clients import GemmaClient
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +37,7 @@ AGENT_SEED = os.getenv(
         "medical triage knowledge retrieval local development seed",
     ),
 )
-README_PATH = str(Path(__file__).resolve().parent.parent / "README.md")
+README_PATH = str(PROJECT_ROOT / "README.md")
 ENABLE_MEDICAL_WEB_SEARCH = os.getenv("ENABLE_MEDICAL_WEB_SEARCH", "false").lower() == "true"
 WEB_SEARCH_TIMEOUT_SECONDS: Final[float] = 3.0
 KNOWLEDGE_ERROR_FLAG = "knowledge_retrieval_error"
@@ -44,6 +49,7 @@ agent = Agent(
     port=AGENT_PORT,
     endpoint=[f"http://127.0.0.1:{AGENT_PORT}/submit"],
     readme_path=README_PATH,
+    description=AGENT_DESCRIPTION,
     publish_agent_details=True,
     metadata={"description": AGENT_DESCRIPTION},
 )

@@ -17,10 +17,10 @@ from uagents_core.contrib.protocols.chat import (
 def test_chat_protocol_uses_fetchai_spec() -> None:
     """The published protocol should match the current Fetch.ai chat spec."""
 
-    assert orchestrator.chat_protocol.name == chat_protocol_spec.name
-    assert orchestrator.chat_protocol.version == chat_protocol_spec.version
+    assert orchestrator.protocol.name == chat_protocol_spec.name
+    assert orchestrator.protocol.version == chat_protocol_spec.version
 
-    manifest = orchestrator.chat_protocol.manifest()
+    manifest = orchestrator.protocol.manifest()
     interaction_map = {
         item["request"]: tuple(item["responses"])
         for item in manifest["interactions"]

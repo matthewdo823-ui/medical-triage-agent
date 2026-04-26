@@ -189,9 +189,9 @@ python -m agents.orchestrator
 Open separate terminals and run:
 
 ```bash
-python agents/symptom_classifier.py
-python agents/knowledge_retrieval.py
-python agents/care_router.py
+python -m agents.symptom_classifier
+python -m agents.knowledge_retrieval
+python -m agents.care_router
 ```
 
 ### 6. Test with ASI:One / Agentverse
