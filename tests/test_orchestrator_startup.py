@@ -48,3 +48,16 @@ def test_startup_port_check_raises_clean_error(monkeypatch: pytest.MonkeyPatch) 
     assert exc_info.value.code is not None
     assert "port 8123 is already in use" in str(exc_info.value)
     assert "ORCHESTRATOR_PORT=<port>" in str(exc_info.value)
+
+
+def test_public_registration_endpoint_rejects_localhost() -> None:
+    """Loopback endpoints should not trigger external Agentverse registration."""
+
+    assert orchestrator._has_public_registration_endpoint("http://127.0.0.1:8000/submit") is False
+    assert orchestrator._has_public_registration_endpoint("http://localhost:8000/submit") is False
+
+
+def test_public_registration_endpoint_accepts_public_hostname() -> None:
+    """A public HTTPS hostname should be eligible for Agentverse endpoint registration."""
+
+    assert orchestrator._has_public_registration_endpoint("https://example.ngrok.app/submit") is True

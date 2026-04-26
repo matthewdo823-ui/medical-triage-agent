@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -14,12 +15,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import aiosqlite
 import httpx
 from dotenv import load_dotenv
-from uagents import Agent, Context, Protocol
+from uagents import Context, Protocol, Agent
 from uagents.setup import fund_agent_if_low
 from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
@@ -129,9 +131,9 @@ agent = Agent(
     seed=ORCHESTRATOR_AGENT_SEED,
     port=AGENT_PORT,
     mailbox=True,
+    publish_agent_details=True,
     readme_path=str(README_PATH),
     description=AGENT_DESCRIPTION,
-    publish_agent_details=True,
     metadata=REGISTRATION_METADATA,
 )
 protocol = Protocol(spec=chat_protocol_spec)
@@ -256,11 +258,47 @@ async def _register_with_agentverse_api(ctx: Context) -> None:
     ctx.logger.info("Registered orchestrator listing and keywords with Agentverse APIs.")
 
 
+def _has_public_registration_endpoint(endpoint: str) -> bool:
+    """Return whether an Agentverse registration endpoint is publicly reachable."""
+
+    if not endpoint.strip():
+        return False
+
+    parsed = urlparse(endpoint)
+    host = parsed.hostname
+    if not host:
+        return False
+
+    if host in {"localhost"} or host.endswith(".local"):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+
+    return not (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
 async def register_agentverse_listing(ctx: Context) -> None:
     """Best-effort Agentverse registration for discoverability."""
 
     if not AGENTVERSE_API_KEY:
         ctx.logger.info("AGENTVERSE_API_KEY not set; skipping explicit Agentverse registration.")
+        return
+
+    if not _has_public_registration_endpoint(PUBLIC_AGENT_ENDPOINT):
+        ctx.logger.info(
+            "Skipping explicit Agentverse endpoint registration because PUBLIC_AGENT_ENDPOINT "
+            "is not publicly reachable: %s",
+            PUBLIC_AGENT_ENDPOINT,
+        )
         return
 
     if await _register_with_fetchai_helper(ctx):
@@ -274,19 +312,6 @@ async def register_agentverse_listing(ctx: Context) -> None:
         await _register_with_agentverse_api(ctx)
     except Exception:
         ctx.logger.exception("Agentverse API registration failed.")
-
-
-def _extract_chat_text(msg: ChatMessage) -> str:
-    """Flatten text content from a chat protocol message."""
-
-    text_parts: list[str] = []
-    for item in msg.content if isinstance(msg.content, list) else []:
-        if isinstance(item, TextContent):
-            text_parts.append(item.text)
-        elif hasattr(item, "text") and getattr(item, "text", None):
-            text_parts.append(str(item.text))
-
-    return "\n".join(part.strip() for part in text_parts if part and part.strip()).strip()
 
 
 def _is_session_start_message(msg: ChatMessage) -> bool:
@@ -689,20 +714,17 @@ async def _maybe_request_payment(
     return True
 
 
-async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) -> None:
-    """Run the triage workflow after chat acknowledgement has been sent."""
+async def build_triage_response_text(
+    ctx: Context,
+    sender: str,
+    raw_text: str,
+) -> Optional[str]:
+    """Run the triage workflow and return the final chat response text."""
 
     session_id = str(uuid4())
     start_time = time.time()
 
-    raw_text = _extract_chat_text(msg)
     if not raw_text:
-        await ctx.send(
-            sender,
-            _build_text_message(
-                "Please describe your symptoms in a sentence or two so I can assess urgency and next steps."
-            ),
-        )
         await log_session(
             session_id,
             "EMPTY_INPUT",
@@ -710,21 +732,20 @@ async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) ->
             fast_path_used=False,
             safety_flags_triggered=[],
         )
-        return
+        return "Please describe your symptoms in a sentence or two so I can assess urgency and next steps."
+
+    safety_result = detect_emergency(raw_text)
+    if safety_result.requires_911 and safety_result.override_response:
+        await log_session(
+            session_id,
+            "FAST_PATH_EMERGENCY",
+            raw_text,
+            fast_path_used=True,
+            safety_flags_triggered=safety_result.triggered_rules,
+        )
+        return safety_result.override_response
 
     try:
-        safety_result = detect_emergency(raw_text)
-        if safety_result.requires_911 and safety_result.override_response:
-            await ctx.send(sender, _build_text_message(safety_result.override_response))
-            await log_session(
-                session_id,
-                "FAST_PATH_EMERGENCY",
-                raw_text,
-                fast_path_used=True,
-                safety_flags_triggered=safety_result.triggered_rules,
-            )
-            return
-
         symptom_input = SymptomInput(
             raw_text=raw_text,
             session_id=session_id,
@@ -754,8 +775,8 @@ async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) ->
             response=safe_response,
             formatted_report=formatted,
         )
-        if not payment_requested:
-            await ctx.send(sender, _build_text_message(formatted))
+        if payment_requested:
+            return None
 
         await log_session(
             session_id,
@@ -765,14 +786,9 @@ async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) ->
             fast_path_used=False,
             safety_flags_triggered=safe_response.safety_flags,
         )
+        return formatted
     except Exception:
-        ctx.logger.exception("Unhandled error while processing triage request")
-        fallback = (
-            "I hit a problem while processing your symptoms. If you have chest pain, trouble "
-            "breathing, stroke-like symptoms, severe bleeding, or you feel unsafe right now, "
-            "call 911 immediately. Otherwise, please try again with a brief description of your symptoms."
-        )
-        await ctx.send(sender, _build_text_message(fallback))
+        logger.exception("Unhandled error while processing triage request")
         await log_session(
             session_id,
             "ERROR",
@@ -780,26 +796,57 @@ async def process_triage_message(ctx: Context, sender: str, msg: ChatMessage) ->
             fast_path_used=False,
             safety_flags_triggered=[],
         )
+        raise RuntimeError(
+            "I hit a problem while processing your symptoms. If you have chest pain, trouble "
+            "breathing, stroke-like symptoms, severe bleeding, or you feel unsafe right now, "
+            "call 911 immediately. Otherwise, please try again with a brief description of your symptoms."
+        )
 
 
 @protocol.on_message(ChatMessage)
-async def handle_chat(ctx: Context, sender: str, msg: ChatMessage) -> None:
+async def handle_message(ctx: Context, sender: str, msg: ChatMessage) -> None:
     """Primary Chat Protocol entrypoint for ASI:One and compatible agents."""
 
     await ctx.send(
         sender,
-        ChatAcknowledgement(timestamp=datetime.utcnow(), acknowledged_msg_id=msg.msg_id),
+        ChatAcknowledgement(timestamp=datetime.now(), acknowledged_msg_id=msg.msg_id),
     )
+
+    text = ""
+    for item in msg.content:
+        if isinstance(item, TextContent):
+            text += item.text
 
     if _is_session_start_message(msg):
         await ctx.send(sender, _build_session_ready_message())
         return
 
-    await process_triage_message(ctx, sender, msg)
+    response = "I am afraid something went wrong and I am unable to answer your question at the moment"
+    try:
+        triage_response = await build_triage_response_text(ctx, sender, text.strip())
+        if triage_response is None:
+            return
+        response = triage_response
+    except RuntimeError as exc:
+        response = str(exc)
+    except Exception:
+        ctx.logger.exception("Error querying triage pipeline")
+
+    await ctx.send(
+        sender,
+        ChatMessage(
+            timestamp=datetime.utcnow(),
+            msg_id=uuid4(),
+            content=[
+                TextContent(type="text", text=response),
+                EndSessionContent(type="end-session"),
+            ],
+        ),
+    )
 
 
 @protocol.on_message(ChatAcknowledgement)
-async def handle_acknowledgement(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
+async def handle_ack(ctx: Context, sender: str, msg: ChatAcknowledgement) -> None:
     """Accept chat acknowledgements for protocol completeness."""
 
     ctx.logger.debug("Received chat acknowledgement from %s for %s", sender, msg.acknowledged_msg_id)

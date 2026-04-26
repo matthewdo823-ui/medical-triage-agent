@@ -153,6 +153,11 @@ Recommended for Agentverse discoverability:
 - `AGENTVERSE_API_KEY`
 - `AGENTVERSE_BASE_URL=https://agentverse.ai`
 
+Note:
+When `PUBLIC_AGENT_ENDPOINT` points to `127.0.0.1` or `localhost`, the orchestrator now skips
+explicit Agentverse endpoint registration and relies on the normal mailbox/chat-protocol flow.
+Use explicit endpoint registration only with a publicly reachable HTTPS endpoint.
+
 Optional:
 
 - `ORCHESTRATOR_PORT=8000`
