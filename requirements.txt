@@ -1,0 +1,9 @@
+uagents
+anthropic
+google-genai
+pydantic
+python-dotenv
+httpx
+aiosqlite
+pytest
+uagents
