@@ -81,11 +81,8 @@ logger = logging.getLogger(__name__)
 
 AGENT_NAME = "medical-triage-agent"
 AGENT_DESCRIPTION = (
-    "I help analyze your medical symptoms and recommend the appropriate level of "
-    "care - from self-care at home to calling 911 immediately. Describe your "
-    "symptoms and I'll assess urgency, explain possible causes, and tell you "
-    "exactly what to do next. NOTE: This is for informational triage only and is "
-    "not a substitute for professional medical advice."
+    "Medical symptom triage agent that accepts Fetch.ai chat messages, assesses urgency, "
+    "and returns calm next-step guidance with emergency escalation when needed."
 )
 AGENT_TAGS = ["medical", "health", "triage", "symptoms", "healthcare", "emergency"]
 AGENT_PORT = 8000
@@ -128,6 +125,7 @@ agent = Agent(
     port=AGENT_PORT,
     mailbox=True,
     readme_path=str(README_PATH),
+    description=AGENT_DESCRIPTION,
     publish_agent_details=True,
     metadata=REGISTRATION_METADATA,
 )
