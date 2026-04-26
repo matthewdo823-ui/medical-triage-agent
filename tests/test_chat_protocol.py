@@ -10,6 +10,7 @@ from uagents_core.contrib.protocols.chat import (
     ChatAcknowledgement,
     ChatMessage,
     StartSessionContent,
+    TextContent,
     chat_protocol_spec,
 )
 
@@ -51,6 +52,22 @@ def test_start_session_messages_are_detected() -> None:
     )
 
     assert orchestrator._is_session_start_message(message) is True
+
+
+def test_start_session_with_text_extracts_user_message() -> None:
+    """Mixed envelopes should preserve symptom text instead of acting empty."""
+
+    message = ChatMessage(
+        timestamp=datetime.utcnow(),
+        msg_id=uuid4(),
+        content=[
+            StartSessionContent(type="start-session"),
+            TextContent(type="text", text="i cant breathe"),
+        ],
+    )
+
+    assert orchestrator._is_session_start_message(message) is True
+    assert orchestrator._extract_text_content(message) == "i cant breathe"
 
 
 def test_session_ready_message_contains_prompt_text() -> None:

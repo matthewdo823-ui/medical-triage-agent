@@ -17,6 +17,7 @@ class InputSafetyFlags:
     """String constants used by emergency detection and input guardrails."""
 
     CONTAINS_CHEST_PAIN_PLUS_SHORTNESS: Final[str] = "chest_pain_dyspnea"
+    CONTAINS_RESPIRATORY_DISTRESS: Final[str] = "respiratory_distress"
     CONTAINS_STROKE_SYMPTOMS: Final[str] = "stroke_symptoms"
     CONTAINS_ANAPHYLAXIS: Final[str] = "anaphylaxis"
     CONTAINS_OVERDOSE: Final[str] = "overdose"
@@ -28,6 +29,7 @@ class InputSafetyFlags:
 
     ALL: Final[tuple[str, ...]] = (
         CONTAINS_CHEST_PAIN_PLUS_SHORTNESS,
+        CONTAINS_RESPIRATORY_DISTRESS,
         CONTAINS_STROKE_SYMPTOMS,
         CONTAINS_ANAPHYLAXIS,
         CONTAINS_OVERDOSE,

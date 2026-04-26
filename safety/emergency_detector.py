@@ -16,6 +16,7 @@ from models.safety import InputSafetyFlags, SafetyCheckResult
 logger = logging.getLogger(__name__)
 
 CARDIAC_EMERGENCY: Final[str] = "cardiac_emergency"
+RESPIRATORY_DISTRESS: Final[str] = "respiratory_distress"
 STROKE: Final[str] = "stroke"
 ANAPHYLAXIS: Final[str] = "anaphylaxis"
 OVERDOSE: Final[str] = "overdose"
@@ -46,6 +47,17 @@ EMERGENCY_PATTERNS: Final[tuple[tuple[str, str, bool, tuple[re.Pattern[str], ...
                 r"(?:(?=.*\b(chest\s+pain|chest\s+hurts|chest\s+pressure|chest\s+tightness)\b)(?=.*\b(shortness\s+of\s+breath|can'?t\s+breathe|cannot\s+breathe|trouble\s+breathing)\b))"
             ),
             _compile(r"\bcardiac\s+arrest\b"),
+        ),
+    ),
+    (
+        RESPIRATORY_DISTRESS,
+        InputSafetyFlags.CONTAINS_RESPIRATORY_DISTRESS,
+        True,
+        (
+            _compile(r"\b(can'?t\s+breathe|cannot\s+breathe|unable\s+to\s+breathe)\b"),
+            _compile(r"\b(struggling\s+to\s+breathe|gasping\s+for\s+air)\b"),
+            _compile(r"\b(trouble\s+breathing|difficulty\s+breathing)\b"),
+            _compile(r"\bsevere\s+shortness\s+of\s+breath\b"),
         ),
     ),
     (
@@ -147,6 +159,15 @@ def build_emergency_response(emergency_type: str) -> str:
             "3. Do not drive yourself to the hospital.\n\n"
             "Tell responders: chest pain symptoms, when they started, where the pain is "
             "spreading, and whether you are short of breath.\n\n"
+            "This is an emergency safety response and not a diagnosis."
+        ),
+        RESPIRATORY_DISTRESS: (
+            "**CALL 911 NOW**\n\n"
+            "1. Call 911 immediately if you are struggling to breathe or cannot breathe.\n"
+            "2. Sit upright if that makes breathing easier.\n"
+            "3. Do not drive yourself, and unlock the door if possible.\n\n"
+            "Tell responders when the breathing trouble started, whether it is getting worse, "
+            "and if you have asthma, allergies, chest pain, fever, or blue lips.\n\n"
             "This is an emergency safety response and not a diagnosis."
         ),
         STROKE: (

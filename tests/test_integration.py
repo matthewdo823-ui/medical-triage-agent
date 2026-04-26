@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -155,11 +155,11 @@ async def _run_non_fast_path_pipeline(text: str) -> orchestrator.TriageResponse:
     """Execute the orchestrator helper pipeline for non-fast-path cases."""
 
     session_id = str(uuid4())
-    start_time = datetime.utcnow().timestamp()
+    start_time = datetime.now(UTC).timestamp()
     symptom_input = SymptomInput(
         raw_text=text,
         session_id=session_id,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(UTC),
     )
     classification, knowledge = await asyncio.gather(
         orchestrator.call_classifier_agent(symptom_input),
@@ -186,6 +186,15 @@ def test_fast_path_emergency_contains_911() -> None:
     assert result.requires_911 is True
     assert result.override_response is not None
     assert case["response_must_contain"] in result.override_response
+
+
+def test_plain_cant_breathe_fast_paths() -> None:
+    """Obvious respiratory distress should bypass the LLM pipeline entirely."""
+
+    result = detect_emergency("i cant breathe")
+    assert result.requires_911 is True
+    assert result.override_response is not None
+    assert "911" in result.override_response
 
 
 def test_headache_with_vision_change_and_neck_stiffness_fast_paths() -> None:
@@ -264,3 +273,45 @@ def test_model_failure_fallback_escalates_neurologic_case(monkeypatch: pytest.Mo
     response = asyncio.run(_run_non_fast_path_pipeline("severe headache with vision changes and neck stiffness"))
     assert response.urgency_level >= 4
     assert response.care_recommendation.pathway in {"911", "er_now"}
+
+
+class InvalidRouterGemmaClient(FakeGemmaClient):
+    """Fake Gemma client that returns an invalid self-care payload for urgent routing."""
+
+    async def complete_json(self, system_prompt: str, user_message: str, **kwargs: object) -> dict:
+        response = await super().complete_json(system_prompt, user_message, **kwargs)
+        if "care pathway router" in system_prompt.lower():
+            response["self_care_steps"] = ["Rest", "Sleep propped up"]
+        return response
+
+
+def test_router_sanitizes_invalid_self_care_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Urgent pathways should drop stray self-care fields instead of failing validation."""
+
+    monkeypatch.setattr(orchestrator, "GemmaClient", InvalidRouterGemmaClient)
+
+    classification = orchestrator.ClassificationResult.model_validate(
+        {
+            "severity_score": 4,
+            "red_flags": ["meningitis concern"],
+            "symptom_clusters": ["neurological", "infectious"],
+            "affected_systems": ["neurological"],
+            "is_emergency": True,
+            "confidence": 0.88,
+            "raw_classifier_output": "{}",
+            "error_flags": [],
+        }
+    )
+    knowledge = orchestrator.KnowledgeResult.model_validate(
+        {
+            "differentials": [],
+            "relevant_conditions": ["central nervous system infection"],
+            "search_sources": ["MedlinePlus"],
+            "knowledge_confidence": 0.81,
+            "error_flags": [],
+        }
+    )
+
+    recommendation = asyncio.run(orchestrator.call_router_agent(classification, knowledge))
+    assert recommendation.pathway in {"er_now", "911"}
+    assert recommendation.self_care_steps is None

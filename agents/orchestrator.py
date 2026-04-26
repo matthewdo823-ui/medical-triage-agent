@@ -12,7 +12,7 @@ import os
 import socket
 import sys
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -157,6 +157,12 @@ SAFE_DEFAULT_REASONING = (
 )
 
 
+def _utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp."""
+
+    return datetime.now(UTC)
+
+
 def _port_is_available(port: int) -> bool:
     """Return whether the orchestrator can bind its configured TCP port."""
 
@@ -197,7 +203,7 @@ def _build_text_message(content: str) -> ChatMessage:
     """Create a chat-protocol response message with a text payload."""
 
     return ChatMessage(
-        timestamp=datetime.utcnow(),
+        timestamp=_utc_now(),
         msg_id=uuid4(),
         content=[
             TextContent(type="text", text=content),
@@ -331,11 +337,21 @@ def _is_session_start_message(msg: ChatMessage) -> bool:
     return any(isinstance(item, StartSessionContent) for item in msg.content)
 
 
+def _extract_text_content(msg: ChatMessage) -> str:
+    """Collect text content from a chat message payload."""
+
+    text = ""
+    for item in msg.content:
+        if isinstance(item, TextContent):
+            text += item.text
+    return text.strip()
+
+
 def _build_session_ready_message() -> ChatMessage:
     """Return a lightweight chat response for session initialization."""
 
     return ChatMessage(
-        timestamp=datetime.utcnow(),
+        timestamp=_utc_now(),
         msg_id=uuid4(),
         content=[
             MetadataContent(
@@ -412,7 +428,7 @@ async def log_session(
                 """,
                 (
                     session_id,
-                    datetime.utcnow().isoformat(),
+                    _utc_now().isoformat(),
                     _hash_input(raw_input),
                     severity,
                     pathway,
@@ -724,6 +740,25 @@ def _enforce_high_severity_override(
     )
 
 
+def _sanitize_recommendation_payload(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    """Normalize router output so it conforms to the CareRecommendation schema."""
+
+    pathway = raw_payload.get("pathway", SAFE_DEFAULT_PATHWAY)
+    self_care_steps = raw_payload.get("self_care_steps")
+    if pathway not in {"self_care", "monitor"}:
+        self_care_steps = None
+
+    return {
+        "pathway": pathway,
+        "pathway_label": raw_payload.get("pathway_label", "Urgent care today"),
+        "urgency_window": raw_payload.get("urgency_window", SAFE_DEFAULT_WINDOW),
+        "reasoning": raw_payload.get("reasoning", SAFE_DEFAULT_REASONING),
+        "immediate_actions": raw_payload.get("immediate_actions", []),
+        "warning_signs": raw_payload.get("warning_signs", []),
+        "self_care_steps": self_care_steps,
+    }
+
+
 async def call_classifier_agent(symptom_input: SymptomInput) -> ClassificationResult:
     """Invoke the classifier specialist through Gemma."""
 
@@ -793,15 +828,7 @@ async def call_router_agent(
             system_prompt=CARE_ROUTER_SYSTEM,
             user_message=_build_router_user_prompt(classification, knowledge),
         )
-        recommendation_data = {
-            "pathway": raw_payload.get("pathway", SAFE_DEFAULT_PATHWAY),
-            "pathway_label": raw_payload.get("pathway_label", "Urgent care today"),
-            "urgency_window": raw_payload.get("urgency_window", SAFE_DEFAULT_WINDOW),
-            "reasoning": raw_payload.get("reasoning", SAFE_DEFAULT_REASONING),
-            "immediate_actions": raw_payload.get("immediate_actions", []),
-            "warning_signs": raw_payload.get("warning_signs", []),
-            "self_care_steps": raw_payload.get("self_care_steps"),
-        }
+        recommendation_data = _sanitize_recommendation_payload(raw_payload)
         recommendation = CareRecommendation.model_validate(recommendation_data)
         return _enforce_high_severity_override(recommendation, classification)
     except Exception:
@@ -975,7 +1002,7 @@ async def build_triage_response_text(
         symptom_input = SymptomInput(
             raw_text=raw_text,
             session_id=session_id,
-            timestamp=datetime.utcnow(),
+            timestamp=_utc_now(),
         )
 
         classification, knowledge = await asyncio.gather(
@@ -1035,21 +1062,18 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage) -> None:
 
     await ctx.send(
         sender,
-        ChatAcknowledgement(timestamp=datetime.now(), acknowledged_msg_id=msg.msg_id),
+        ChatAcknowledgement(timestamp=_utc_now(), acknowledged_msg_id=msg.msg_id),
     )
 
-    text = ""
-    for item in msg.content:
-        if isinstance(item, TextContent):
-            text += item.text
+    text = _extract_text_content(msg)
 
-    if _is_session_start_message(msg):
+    if _is_session_start_message(msg) and not text:
         await ctx.send(sender, _build_session_ready_message())
         return
 
     response = "I am afraid something went wrong and I am unable to answer your question at the moment"
     try:
-        triage_response = await build_triage_response_text(ctx, sender, text.strip())
+        triage_response = await build_triage_response_text(ctx, sender, text)
         if triage_response is None:
             return
         response = triage_response
@@ -1061,7 +1085,7 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage) -> None:
     await ctx.send(
         sender,
         ChatMessage(
-            timestamp=datetime.utcnow(),
+            timestamp=_utc_now(),
             msg_id=uuid4(),
             content=[
                 TextContent(type="text", text=response),
