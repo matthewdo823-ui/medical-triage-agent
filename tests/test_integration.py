@@ -188,6 +188,16 @@ def test_fast_path_emergency_contains_911() -> None:
     assert case["response_must_contain"] in result.override_response
 
 
+def test_headache_with_vision_change_and_neck_stiffness_fast_paths() -> None:
+    """Neurologic emergency symptoms should bypass the LLM pipeline."""
+
+    text = "I have a severe headache with sudden vision changes and neck stiffness. What should I do?"
+    result = detect_emergency(text)
+    assert result.requires_911 is True
+    assert result.override_response is not None
+    assert "911" in result.override_response
+
+
 def test_mild_symptom_integration(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mild URI symptoms should stay in the self-care or monitor range."""
 
@@ -214,3 +224,43 @@ def test_meningitis_like_integration(monkeypatch: pytest.MonkeyPatch) -> None:
     formatted = orchestrator.format_chat_response(response).lower()
     assert case["response_must_contain"] in formatted
     assert response.care_recommendation.pathway in {"er_now", "911"}
+
+
+class FailingGemmaClient:
+    """Fake Gemma client that always fails to force conservative fallbacks."""
+
+    async def complete_json(self, *_: object, **__: object) -> dict:
+        raise RuntimeError("simulated gemma failure")
+
+
+def test_model_failures_degrade_to_safe_triage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Orchestrator helpers should fall back to safe triage instead of crashing."""
+
+    monkeypatch.setattr(orchestrator, "GemmaClient", FailingGemmaClient)
+    monkeypatch.setattr(orchestrator, "ClaudeClient", FakeClaudeClient)
+
+    response = asyncio.run(_run_non_fast_path_pipeline("persistent abdominal pain for 2 days"))
+    assert response.care_recommendation.pathway == "urgent_care_today"
+    assert "medical professional today" in response.care_recommendation.reasoning.lower()
+
+
+def test_model_failure_fallback_keeps_mild_case_non_emergency(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fallback heuristics should not turn mild URI symptoms into the same urgent answer."""
+
+    monkeypatch.setattr(orchestrator, "GemmaClient", FailingGemmaClient)
+    monkeypatch.setattr(orchestrator, "ClaudeClient", FakeClaudeClient)
+
+    response = asyncio.run(_run_non_fast_path_pipeline("mild runny nose and sore throat"))
+    assert response.urgency_level <= 2
+    assert response.care_recommendation.pathway == "doctor_soon"
+
+
+def test_model_failure_fallback_escalates_neurologic_case(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fallback heuristics should still escalate obviously concerning neurologic symptoms."""
+
+    monkeypatch.setattr(orchestrator, "GemmaClient", FailingGemmaClient)
+    monkeypatch.setattr(orchestrator, "ClaudeClient", FakeClaudeClient)
+
+    response = asyncio.run(_run_non_fast_path_pipeline("severe headache with vision changes and neck stiffness"))
+    assert response.urgency_level >= 4
+    assert response.care_recommendation.pathway in {"911", "er_now"}

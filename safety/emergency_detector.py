@@ -62,6 +62,12 @@ EMERGENCY_PATTERNS: Final[tuple[tuple[str, str, bool, tuple[re.Pattern[str], ...
                 r"\b(sudden\s+severe\s+headache|worst\s+headache\s+of\s+my\s+life)\b"
             ),
             _compile(
+                r"(?:(?=.*\bsevere\s+headache\b)(?=.*\b(sudden\s+vision\s+changes|vision\s+changes)\b)(?=.*\bneck\s+stiffness\b))"
+            ),
+            _compile(
+                r"(?:(?=.*\bsevere\s+headache\b)(?=.*\b(sudden\s+blurred\s+vision|blurred\s+vision|vision\s+loss)\b))"
+            ),
+            _compile(
                 r"(?:(?=.*\bface(?:\s+is)?\s+drooping\b)(?=.*\bcan(?:not|'?t)\s+speak\b))"
             ),
             _compile(r"\bstroke\b"),

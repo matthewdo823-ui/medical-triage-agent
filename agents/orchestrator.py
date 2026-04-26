@@ -145,6 +145,17 @@ payment_protocol = (
 
 _pending_paid_reports: dict[str, dict[str, Any]] = {}
 
+CLASSIFIER_ERROR_FLAG = "classifier_error"
+KNOWLEDGE_ERROR_FLAG = "knowledge_retrieval_error"
+SAFE_DEFAULT_SEVERITY = 3
+SAFE_DEFAULT_CONFIDENCE = 0.1
+SAFE_DEFAULT_PATHWAY = "urgent_care_today"
+SAFE_DEFAULT_WINDOW = "Within 4 hours"
+SAFE_DEFAULT_REASONING = (
+    "We encountered an issue analyzing your symptoms. Out of caution, we recommend "
+    "being evaluated by a medical professional today."
+)
+
 
 def _port_is_available(port: int) -> bool:
     """Return whether the orchestrator can bind its configured TCP port."""
@@ -515,49 +526,259 @@ def _build_immediate_message(
     return recommendation.reasoning
 
 
+def _heuristic_classification_from_text(symptom_input: SymptomInput) -> ClassificationResult:
+    """Build a conservative text-only classification when the model is unavailable."""
+
+    text = symptom_input.raw_text.lower()
+    red_flags: list[str] = []
+    symptom_clusters: list[str] = []
+    affected_systems: list[str] = []
+    severity_score = SAFE_DEFAULT_SEVERITY
+
+    def add_cluster(cluster: str, system: str) -> None:
+        if cluster not in symptom_clusters:
+            symptom_clusters.append(cluster)
+        if system not in affected_systems:
+            affected_systems.append(system)
+
+    if any(term in text for term in ["chest pain", "shortness of breath", "can't breathe", "cannot breathe"]):
+        severity_score = max(severity_score, 4)
+        red_flags.append("cardiopulmonary symptoms")
+        add_cluster("cardiopulmonary", "cardiovascular")
+
+    if any(term in text for term in ["severe headache", "vision changes", "neck stiffness", "confusion", "weakness", "numbness"]):
+        severity_score = max(severity_score, 4)
+        red_flags.append("neurological warning symptoms")
+        add_cluster("neurological", "neurological")
+
+    if any(term in text for term in ["high fever", "103", "104", "stiff neck", "light sensitivity"]):
+        severity_score = max(severity_score, 4)
+        red_flags.append("possible serious infection")
+        add_cluster("infectious", "immune")
+
+    if any(term in text for term in ["severe pain", "10/10", "worst pain", "can't walk", "can't stand"]):
+        severity_score = max(severity_score, 4)
+
+    if any(term in text for term in ["abdominal pain", "vomiting", "diarrhea", "nausea"]):
+        severity_score = max(severity_score, 3)
+        add_cluster("gastrointestinal", "gastrointestinal")
+
+    if any(term in text for term in ["cough", "sore throat", "runny nose", "congestion"]):
+        severity_score = max(severity_score, 2)
+        add_cluster("upper respiratory", "respiratory")
+
+    if "mild" in text and severity_score <= 3:
+        severity_score = min(severity_score, 2)
+
+    if not symptom_clusters:
+        symptom_clusters.append("unclassified")
+
+    return ClassificationResult.model_validate(
+        {
+            "severity_score": severity_score,
+            "red_flags": red_flags,
+            "symptom_clusters": symptom_clusters,
+            "affected_systems": affected_systems,
+            "is_emergency": severity_score >= 4 or bool(red_flags),
+            "confidence": 0.25,
+            "raw_classifier_output": "heuristic_fallback",
+            "error_flags": [CLASSIFIER_ERROR_FLAG],
+        }
+    )
+
+
+def _build_classifier_error_result(error: Exception | str) -> ClassificationResult:
+    """Return a safe default classification when the classifier fails."""
+
+    error_message = str(error)
+    return ClassificationResult.model_validate(
+        {
+            "severity_score": SAFE_DEFAULT_SEVERITY,
+            "red_flags": [],
+            "symptom_clusters": ["unclassified"],
+            "affected_systems": [],
+            "is_emergency": False,
+            "confidence": SAFE_DEFAULT_CONFIDENCE,
+            "raw_classifier_output": error_message or "classifier_error",
+            "error_flags": [CLASSIFIER_ERROR_FLAG],
+        }
+    )
+
+
+def _build_knowledge_error_result(error: Exception | str) -> KnowledgeResult:
+    """Return the minimal safe retrieval result on failure."""
+
+    return KnowledgeResult.model_validate(
+        {
+            "differentials": [],
+            "relevant_conditions": [],
+            "search_sources": [],
+            "knowledge_confidence": SAFE_DEFAULT_CONFIDENCE,
+            "error_flags": [KNOWLEDGE_ERROR_FLAG, str(error)],
+        }
+    )
+
+
+def _build_router_error_recommendation(classification: Optional[ClassificationResult] = None) -> CareRecommendation:
+    """Return the safe care recommendation if routing fails."""
+
+    pathway = SAFE_DEFAULT_PATHWAY
+    pathway_label = "Urgent care today"
+    urgency_window = SAFE_DEFAULT_WINDOW
+    reasoning = SAFE_DEFAULT_REASONING
+    immediate_actions = [
+        "Arrange prompt medical evaluation today.",
+        "Avoid strenuous activity until you are assessed.",
+    ]
+    warning_signs = [
+        "Seek immediate emergency care if you develop: chest pain",
+        "Seek immediate emergency care if you develop: difficulty breathing",
+        "Seek immediate emergency care if you develop: confusion or sudden worsening",
+    ]
+
+    if classification is not None:
+        if classification.severity_score >= 5 or classification.red_flags:
+            pathway = "911"
+            pathway_label = "Call 911"
+            urgency_window = "Immediately"
+            reasoning = (
+                "Your symptoms include warning features that may represent a medical emergency. "
+                "Because the full model analysis was unavailable, the safest next step is immediate emergency help."
+            )
+            immediate_actions = [
+                "Call 911 now.",
+                "Do not drive yourself.",
+                "Have someone stay with you if possible.",
+            ]
+        elif classification.severity_score >= 4:
+            pathway = "er_now"
+            pathway_label = "Emergency room now"
+            urgency_window = "Immediately"
+            reasoning = (
+                "Your symptoms may need emergency evaluation today. Because the full model analysis was unavailable, "
+                "the safest next step is going to the emergency room now."
+            )
+            immediate_actions = [
+                "Go to the emergency room now.",
+                "Do not drive yourself if you feel unsafe.",
+                "Have someone stay with you if possible.",
+            ]
+        elif classification.severity_score <= 2:
+            pathway = "doctor_soon"
+            pathway_label = "Doctor soon"
+            urgency_window = "Within 1 week"
+            reasoning = (
+                "Your symptoms do not sound like a clear emergency from the fallback safety check, "
+                "but a non-urgent medical review is still reasonable."
+            )
+            immediate_actions = [
+                "Arrange a clinic or primary care visit soon.",
+                "Rest and monitor your symptoms closely.",
+            ]
+
+    return CareRecommendation.model_validate(
+        {
+            "pathway": pathway,
+            "pathway_label": pathway_label,
+            "urgency_window": urgency_window,
+            "reasoning": reasoning,
+            "immediate_actions": immediate_actions,
+            "warning_signs": warning_signs,
+            "self_care_steps": None,
+        }
+    )
+
+
+def _enforce_high_severity_override(
+    recommendation: CareRecommendation,
+    classification: ClassificationResult,
+) -> CareRecommendation:
+    """Override low-acuity pathways for high-severity classifications."""
+
+    severity = classification.severity_score
+    if severity < 4:
+        return recommendation
+
+    if recommendation.pathway in {"911", "er_now"}:
+        return recommendation
+
+    if severity >= 5 or classification.red_flags:
+        return CareRecommendation.model_validate(
+            {
+                **recommendation.model_dump(),
+                "pathway": "911",
+                "pathway_label": "Call 911",
+                "urgency_window": "Immediately",
+                "self_care_steps": None,
+            }
+        )
+
+    return CareRecommendation.model_validate(
+        {
+            **recommendation.model_dump(),
+            "pathway": "er_now",
+            "pathway_label": "Emergency room now",
+            "urgency_window": "Immediately",
+            "self_care_steps": None,
+        }
+    )
+
+
 async def call_classifier_agent(symptom_input: SymptomInput) -> ClassificationResult:
     """Invoke the classifier specialist through Gemma."""
 
-    client = GemmaClient()
-    raw_payload = await client.complete_json(
-        system_prompt=SYMPTOM_CLASSIFIER_SYSTEM,
-        user_message=build_classifier_user_prompt(symptom_input),
-    )
-    classification_data = {
-        "severity_score": raw_payload.get("severity_score", 3),
-        "red_flags": raw_payload.get("red_flags", []),
-        "symptom_clusters": raw_payload.get("symptom_clusters", []),
-        "affected_systems": raw_payload.get("affected_systems", []),
-        "is_emergency": raw_payload.get("is_emergency", False),
-        "confidence": raw_payload.get("confidence", 0.3),
-        "raw_classifier_output": json.dumps(raw_payload),
-    }
-    return ClassificationResult.model_validate(classification_data)
+    try:
+        client = GemmaClient()
+        raw_payload = await client.complete_json(
+            system_prompt=SYMPTOM_CLASSIFIER_SYSTEM,
+            user_message=build_classifier_user_prompt(symptom_input),
+        )
+        classification_data = {
+            "severity_score": raw_payload.get("severity_score", SAFE_DEFAULT_SEVERITY),
+            "red_flags": raw_payload.get("red_flags", []),
+            "symptom_clusters": raw_payload.get("symptom_clusters", []),
+            "affected_systems": raw_payload.get("affected_systems", []),
+            "is_emergency": raw_payload.get("is_emergency", False),
+            "confidence": raw_payload.get("confidence", SAFE_DEFAULT_CONFIDENCE),
+            "raw_classifier_output": json.dumps(raw_payload),
+            "error_flags": [],
+        }
+        return ClassificationResult.model_validate(classification_data)
+    except Exception as exc:
+        logger.exception("Classifier helper failed for session %s", symptom_input.session_id)
+        fallback = _heuristic_classification_from_text(symptom_input)
+        fallback.error_flags.append(str(exc))
+        return fallback
 
 
 async def call_knowledge_agent(symptom_input: SymptomInput) -> KnowledgeResult:
     """Invoke the retrieval specialist through Gemma."""
 
-    client = GemmaClient()
-    raw_payload = await client.complete_json(
-        system_prompt=KNOWLEDGE_RETRIEVAL_SYSTEM,
-        user_message=_build_knowledge_user_prompt(symptom_input),
-    )
+    try:
+        client = GemmaClient()
+        raw_payload = await client.complete_json(
+            system_prompt=KNOWLEDGE_RETRIEVAL_SYSTEM,
+            user_message=_build_knowledge_user_prompt(symptom_input),
+        )
 
-    differential_payloads = raw_payload.get("differentials", [])
-    differentials = [
-        DifferentialDiagnosis.model_validate(item)
-        for item in differential_payloads
-        if isinstance(item, dict)
-    ]
+        differential_payloads = raw_payload.get("differentials", [])
+        differentials = [
+            DifferentialDiagnosis.model_validate(item)
+            for item in differential_payloads
+            if isinstance(item, dict)
+        ]
 
-    knowledge_data = {
-        "differentials": differentials,
-        "relevant_conditions": raw_payload.get("relevant_conditions", []),
-        "search_sources": raw_payload.get("search_sources", []),
-        "knowledge_confidence": raw_payload.get("knowledge_confidence", 0.3),
-    }
-    return KnowledgeResult.model_validate(knowledge_data)
+        knowledge_data = {
+            "differentials": differentials,
+            "relevant_conditions": raw_payload.get("relevant_conditions", []),
+            "search_sources": raw_payload.get("search_sources", []),
+            "knowledge_confidence": raw_payload.get("knowledge_confidence", SAFE_DEFAULT_CONFIDENCE),
+            "error_flags": [],
+        }
+        return KnowledgeResult.model_validate(knowledge_data)
+    except Exception as exc:
+        logger.exception("Knowledge helper failed for session %s", symptom_input.session_id)
+        return _build_knowledge_error_result(exc)
 
 
 async def call_router_agent(
@@ -566,21 +787,26 @@ async def call_router_agent(
 ) -> CareRecommendation:
     """Invoke the routing specialist through Gemma."""
 
-    client = GemmaClient()
-    raw_payload = await client.complete_json(
-        system_prompt=CARE_ROUTER_SYSTEM,
-        user_message=_build_router_user_prompt(classification, knowledge),
-    )
-    recommendation_data = {
-        "pathway": raw_payload.get("pathway", "doctor_soon"),
-        "pathway_label": raw_payload.get("pathway_label", "Doctor soon"),
-        "urgency_window": raw_payload.get("urgency_window", "Within 1 week"),
-        "reasoning": raw_payload.get("reasoning", "Prompt medical follow-up is recommended."),
-        "immediate_actions": raw_payload.get("immediate_actions", []),
-        "warning_signs": raw_payload.get("warning_signs", []),
-        "self_care_steps": raw_payload.get("self_care_steps"),
-    }
-    return CareRecommendation.model_validate(recommendation_data)
+    try:
+        client = GemmaClient()
+        raw_payload = await client.complete_json(
+            system_prompt=CARE_ROUTER_SYSTEM,
+            user_message=_build_router_user_prompt(classification, knowledge),
+        )
+        recommendation_data = {
+            "pathway": raw_payload.get("pathway", SAFE_DEFAULT_PATHWAY),
+            "pathway_label": raw_payload.get("pathway_label", "Urgent care today"),
+            "urgency_window": raw_payload.get("urgency_window", SAFE_DEFAULT_WINDOW),
+            "reasoning": raw_payload.get("reasoning", SAFE_DEFAULT_REASONING),
+            "immediate_actions": raw_payload.get("immediate_actions", []),
+            "warning_signs": raw_payload.get("warning_signs", []),
+            "self_care_steps": raw_payload.get("self_care_steps"),
+        }
+        recommendation = CareRecommendation.model_validate(recommendation_data)
+        return _enforce_high_severity_override(recommendation, classification)
+    except Exception:
+        logger.exception("Router helper failed")
+        return _build_router_error_recommendation(classification)
 
 
 async def synthesize_response(

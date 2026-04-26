@@ -10,7 +10,7 @@ Agentverse is the right platform for this because the system benefits from disco
 
 - User interface: ASI:One via Fetch.ai Chat Protocol
 - Orchestrator model: Anthropic Claude Haiku `claude-haiku-4-5-20251001`
-- Specialist model: Google Gemma 4 `gemma-4-27b-it`
+- Specialist model: Google Gemma 4 `gemma-4-31b-it`
 - Framework: `uagents`
 - Safety layer: fast-path regex emergency detection plus deterministic guardrails
 - Optional monetization: Payment Protocol gate for premium/full report delivery
@@ -51,7 +51,7 @@ This project uses a dual-model design because the two hardest parts of medical t
 
 Claude Haiku handles the user-facing synthesis layer. That final step needs calm tone, readable structure, careful phrasing, and strong formatting discipline. Claude is used only after the specialist pipeline has already produced structured triage inputs, so it focuses on turning machine-readable signals into a clear explanation for the user.
 
-Gemma 4 (`gemma-4-27b-it`) handles the three specialist tasks: symptom classification, knowledge retrieval, and care routing. Those tasks benefit from a fast, capable open model with native JSON mode and strong structured inference behavior. The pipeline leans on Gemma for repeatable schema-shaped outputs rather than long free-form prose.
+Gemma 4 (`gemma-4-31b-it`) handles the three specialist tasks: symptom classification, knowledge retrieval, and care routing. Those tasks benefit from a fast, capable open model with native JSON mode and strong structured inference behavior. The pipeline leans on Gemma for repeatable schema-shaped outputs rather than long free-form prose.
 
 Using two providers also demonstrates architectural flexibility and production-minded design. In real systems, the best model for structured routing is not always the best model for user communication, and this design reflects that separation clearly.
 
@@ -143,6 +143,7 @@ Required keys:
 
 - `ANTHROPIC_API_KEY`: used by Claude Haiku for final response synthesis
 - `GOOGLE_API_KEY`: used by Gemma 4 for the specialist sub-agents
+- `GOOGLE_GENAI_MODEL` or `GEMMA_MODEL` (optional override, defaults to `gemma-4-31b-it`)
 - `ORCHESTRATOR_SEED`
 - `CLASSIFIER_SEED`
 - `KNOWLEDGE_SEED`

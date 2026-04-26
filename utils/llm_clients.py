@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
 DEFAULT_CLAUDE_MODEL = "claude-haiku-4-5-20251001"
-DEFAULT_GEMMA_MODEL = "gemma-4-27b-it"
+DEFAULT_GEMMA_MODEL = "gemma-4-31b-it"
 DEFAULT_MAX_TOKENS = 1500
 JSON_RETRY_SUFFIX = "Output ONLY valid JSON. No preamble, no markdown."
 
@@ -151,7 +151,10 @@ class GemmaClient:
             raise GemmaClientError("GOOGLE_API_KEY is not set.")
 
         self.api_key = api_key
-        self.model = DEFAULT_GEMMA_MODEL
+        self.model = os.getenv(
+            "GOOGLE_GENAI_MODEL",
+            os.getenv("GEMMA_MODEL", DEFAULT_GEMMA_MODEL),
+        )
         self.max_output_tokens = DEFAULT_MAX_TOKENS
         self.client = genai.Client(api_key=api_key)
 
