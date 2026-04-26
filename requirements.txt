@@ -7,3 +7,4 @@ httpx
 aiosqlite
 pytest
 uagents
+fetchai

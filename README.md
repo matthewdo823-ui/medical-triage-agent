@@ -155,6 +155,7 @@ Recommended for Agentverse discoverability:
 
 Optional:
 
+- `ORCHESTRATOR_PORT=8000`
 - `ENABLE_PAYMENT_PROTOCOL=false`
 - `PAYMENT_AMOUNT_ATESTFET=10`
 - `PUBLIC_AGENT_ENDPOINT=http://127.0.0.1:8000/submit`
@@ -172,7 +173,15 @@ pytest tests/test_safety.py -v
 ### 4. Run the orchestrator locally
 
 ```bash
-python agents/orchestrator.py
+python -m agents.orchestrator
+```
+
+If port `8000` is already in use, start the orchestrator on a different port:
+
+```bash
+ORCHESTRATOR_PORT=8004 \
+PUBLIC_AGENT_ENDPOINT=http://127.0.0.1:8004/submit \
+python -m agents.orchestrator
 ```
 
 ### 5. Run specialist agents locally

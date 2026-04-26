@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import logging
 import os
+import socket
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +57,10 @@ except ImportError:  # pragma: no cover - optional dependency path
     CommitPayment = CompletePayment = Funds = RejectPayment = RequestPayment = None
     payment_protocol_spec = None
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from models.triage import (
     CareRecommendation,
     ClassificationResult,
@@ -73,7 +80,7 @@ from safety.emergency_detector import detect_emergency
 from safety.guardrails import CANONICAL_DISCLAIMER, apply_guardrails
 from utils.llm_clients import ClaudeClient, ClaudeClientError, GemmaClient, RESPONSE_SYNTHESIS_SYSTEM
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(PROJECT_ROOT / ".env")
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
@@ -85,9 +92,9 @@ AGENT_DESCRIPTION = (
     "and returns calm next-step guidance with emergency escalation when needed."
 )
 AGENT_TAGS = ["medical", "health", "triage", "symptoms", "healthcare", "emergency"]
-AGENT_PORT = 8000
-DB_PATH = Path(__file__).resolve().parent.parent / "triage_sessions.db"
-README_PATH = Path(__file__).resolve().parent.parent / "README.md"
+AGENT_PORT = int(os.getenv("ORCHESTRATOR_PORT", "8000"))
+DB_PATH = PROJECT_ROOT / "triage_sessions.db"
+README_PATH = PROJECT_ROOT / "README.md"
 PUBLIC_AGENT_ENDPOINT = os.getenv(
     "PUBLIC_AGENT_ENDPOINT",
     f"http://127.0.0.1:{AGENT_PORT}/submit",
@@ -124,6 +131,7 @@ agent = Agent(
     seed=ORCHESTRATOR_AGENT_SEED,
     port=AGENT_PORT,
     mailbox=True,
+    endpoint=[PUBLIC_AGENT_ENDPOINT],  # ← ADD THIS LINE
     readme_path=str(README_PATH),
     description=AGENT_DESCRIPTION,
     publish_agent_details=True,
@@ -141,6 +149,35 @@ payment_protocol = (
 )
 
 _pending_paid_reports: dict[str, dict[str, Any]] = {}
+
+
+def _port_is_available(port: int) -> bool:
+    """Return whether the orchestrator can bind its configured TCP port."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("0.0.0.0", port))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return False
+            raise
+    return True
+
+
+def _ensure_startup_port_available() -> None:
+    """Fail fast with a clean error when another process already owns the port."""
+
+    if _port_is_available(AGENT_PORT):
+        return
+
+    raise SystemExit(
+        "Orchestrator startup aborted: port "
+        f"{AGENT_PORT} is already in use.\n"
+        "Stop the process using that port, or start this agent on a different port with "
+        f"`ORCHESTRATOR_PORT=<port> PUBLIC_AGENT_ENDPOINT=http://127.0.0.1:<port>/submit "
+        f"python3 -m agents.orchestrator`."
+    )
 
 
 def _compute_processing_time_ms(start_time: float) -> int:
@@ -818,13 +855,16 @@ async def on_startup(ctx: Context) -> None:
     except Exception:
         ctx.logger.exception("Unable to fund orchestrator wallet automatically.")
     await register_agentverse_listing(ctx)
+    ctx.logger.info("Fetch.ai chat protocol attached: %s", chat_protocol.digest)
     ctx.logger.info("Medical triage orchestrator ready at %s", agent.address)
 
 
+# Attach the Fetch.ai chat protocol so Agentverse and ASI:One can discover it.
 agent.include(chat_protocol, publish_manifest=True)
 if payment_protocol is not None:
     agent.include(payment_protocol, publish_manifest=True)
 
 
 if __name__ == "__main__":
+    _ensure_startup_port_available()
     agent.run()
